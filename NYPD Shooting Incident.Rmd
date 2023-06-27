@@ -1,0 +1,385 @@
+---
+title: "Analysis Report: NYPD Shooting Incidents"
+author: "Chihao Lo"
+date: "2023-05-29"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(lubridate)
+library(ggplot2)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Analyzing NYPD shooting incidents using R Markdown.
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+### Import the NYPD Shooting Incidents data:
+I'm importing data from a CSV file, containing historical shooting incidents data .  
+``` {r get_nypd_data}
+# Set up the URL link, pointing to the source of the data in the following:
+nypd_historic <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+# importing data
+NYPD_historic_cases_org <- readr::read_csv(nypd_historic)
+```
+
+### Perform data transformation and tidying on the NYPD Shooting Incidents Dataset
+
+The dataset contains instances where the PERP_RACE and LOCATION_DESC columns have null values and blank entries, and the PERP_AGE_GROUP field has typographical errors, null values, and blanks. However, these issues does have any impact when analyzing the growth of shooting incidents and murders related to the New York City Borough. To ensure the statistical integrity of the data and accurate transformation between datasets, I have chosen to maintain two separate datasets: NYPD_historic_cases_org and NYPD_historic_cases.
+
+NYPD_historic_cases_org represents the original dataset with unwanted columns removed and the OCCUR_DATE converted to a date object. On the other hand, NYPD_historic_cases has undergone cleaning procedures to filter out typographical errors and null values. This cleaned dataset will be used to analyze shooting incidents in connection with location, race, and age group.
+
+```{r transform_tidy_nypd_historic_cases, message= FALSE}
+#remove unwanted columns from the dataset and reformat the date
+NYPD_historic_cases_org <- NYPD_historic_cases_org %>%
+  mutate(date = mdy(OCCUR_DATE)) %>%
+  select(-c(INCIDENT_KEY, X_COORD_CD, Y_COORD_CD, Latitude, JURISDICTION_CODE, Longitude, Lon_Lat))
+
+#clean the data set by removing the field data containing ("null) and typographical errors
+NYPD_historic_cases <- NYPD_historic_cases_org %>%
+  mutate(date = mdy(OCCUR_DATE)) %>%
+  filter(!is.na(PERP_RACE)) %>%
+  filter(!(PERP_AGE_GROUP %in% c(1020, 224, 940))) %>%
+  filter(PERP_RACE != "(null)") %>%
+  filter(LOCATION_DESC != "(null)")
+  #select(-c(INCIDENT_KEY, X_COORD_CD, Y_COORD_CD, Latitude, JURISDICTION_CODE, Longitude, Lon_Lat))
+
+```
+
+
+### Measuring the Growth of Shooting Incidents and Murders over a 17-Year Period
+I am interested in exploring the growth rate of shooting incidents and murders in New York City, as well as understanding how these incidents are distributed across the different boroughs.
+
+By transforming the dataset from NYPD_historic_cases_org to NYPD_Shooting_by_Borough, I arranged the dataset by date and then grouped the data by date and Borough. This step is crucial to ensure that the summarise() function accurately calculates the sum of incidents and murders within each borough.
+
+#### Analyzing the Growth of Shooting Incidents and Murders by Borough 
+```{r NYPD_Shooting_by_Borough, message=FALSE}
+#Group the data frame by BORO and Adding the column, City for later use
+NYPD_Shooting_by_Borough <- NYPD_historic_cases_org %>%
+  arrange(date) %>%
+  group_by(date, BORO) %>%
+  summarize(murders = sum(STATISTICAL_MURDER_FLAG), incidents =n()) %>%
+  mutate(City = "New York", murderrate = murders/incidents, year = year(as.Date(date))) %>%
+  select(City, BORO, year, date, incidents, murders, murderrate ) %>%
+  ungroup() 
+```
+
+For visualization, the dataset has been transformed from NYPD_Shooting_by_Borough to NYPD_Shooting_NewYork_boroguh_totals
+
+In order to calculate the accurate growth rate of shooting incidents and murders over a 17-year period, I grouped the dataset by year and borough. I then summarized the incidents and murders within each group. After that, I grouped the dataset by borough only. Finally, I created new columns, "igrowth" to represent the growth rates of shooting incidents.
+
+```{r NYPD_Shooting_NewYork_boroguh_totals, message=FALSE}
+NYPD_Shooting_NewYork_boroguh_totals <- NYPD_Shooting_by_Borough %>%
+  group_by(year, BORO) %>%
+  summarise(incidents = sum(incidents), murders = sum(murders)) %>%
+  group_by(BORO) %>%
+  mutate(lag_int = lag(incidents), igrowth = (incidents - lag(incidents)) / lag(incidents), mgrowth = (murders - lag(murders))/lag(murders)) %>%
+  #for debugging perupose
+  #select(year, BORO, igrowth, lag_int, incidents, murders, mgrowth) %>%
+  ungroup()
+
+NYPD_Shooting_NewYork_boroguh_totals %>%
+  filter(!is.na(igrowth)) %>%
+  ggplot(aes(x = year, y = igrowth, color = BORO)) +
+  geom_line() +
+  geom_point() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(x = "year", y = "growth %", title = "The growth of Shooting Incidents analyzed by borough in New York City.")
+```
+
+#### Analyzing the Growth of Shooting Incidents and Murders in New York City 
+By transforming the dataset from NYPD_Shooting_by_Borough to NYPD_Shooting_NewYork_City_totals, I grouped the dataset by year and city, I then  summerized the shooting incidents and murders within each group. After that, I grouped the dataset by city only. I created new columns, "igrowth" for shooting incidents and "mgrowth" for murders, to represent the growth rates of shooting incidents and murders.
+
+```{r NYPD_Shooting_NewYork_City_totals, message=FALSE, warning=FALSE}
+#Group the data frame by the 'City' variable to obtain the total number of incidents and murders.
+NYPD_Shooting_NewYork_City_totals <- NYPD_Shooting_by_Borough %>%
+  group_by(year, City) %>%
+  summarise(incidents = sum(incidents), murders = sum(murders)) %>%
+  group_by(City) %>%
+  mutate(lag_int = lag(incidents), igrowth = (incidents - lag(incidents)) / lag(incidents), mgrowth = (murders - lag(murders))/lag(murders)) %>%
+  #select(City, date, incidents, murders, murderrate) %>%
+  ungroup()
+
+#Create visualizations to depict the growth rate of New York City shooting incidents and murders.
+
+NYPD_Shooting_NewYork_City_totals %>%
+  filter(incidents >0) %>%
+  ggplot() +
+  geom_line(aes(x = year, y = igrowth, color = "shooting incidents growth rate")) +
+  geom_point(aes(x= year, y = igrowth, color = "shooting incidents growth rate")) +
+  geom_line(aes(x = year, y = mgrowth, color = "murders growth rate")) +
+  geom_point(aes(x = year, y = mgrowth, color = "murders growth rate")) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 0)) +
+  labs(x = "year", y = "growth %", title = "The growth of NYPD Shooting Incidents and murders in New York City.")
+```
+
+This chart provides an overview of the growth rate of incidents and murders in New York City over a 17-year period.
+
+As we can observe, there is a noticeable spike in the year 2020. This increase in shooting incidents and murders may be attributed to the impact of the COVID-19 lockdown measured during that period of time.
+
+### Ranking New York City Boroughs by Number of Shooting Incidents
+This visualization presents the ranking of New York City boroughs based on the number of shooting incidents, with the bar chart displaying the shooting incident count. Additionally, the chart includes the number of murders per borough at the top of each bar
+
+By transforming the dataset from NYPD_Shooting_by_Borough to NYPD_lowest_Incidents_BORO, I have created a grouped dataset where the date information has been removed.
+
+``` {r NYPD_lowest_incidents_BORO}
+#transform the dataset from NYPD_Shooting_by_Borough to NYPD_lowest_incidents_BORO
+NYPD_lowest_incidents_BORO <- NYPD_Shooting_by_Borough %>%
+  group_by(BORO) %>%
+  summarise(murders = sum(murders), incidents = sum(incidents), murderrate = murders/incidents) %>%
+  select(BORO, incidents, murders, murderrate) %>%
+  ungroup()
+
+#Ranked the boroughs from the lowest to the highest based on the number of murders
+NYPD_lowest_incidents_BORO <- NYPD_lowest_incidents_BORO %>%
+  mutate(BORO = factor(BORO, levels = BORO[order(murders)]))
+  #select(BORO, incidents, murders, murderrate)
+
+#Generate a bar chart to visually illustrate the distribution of crimes across the different boroughs of New York City.
+NYPD_lowest_incidents_BORO %>%
+  ggplot(aes(x = BORO, fill = murders)) +
+  geom_bar(aes(y = incidents), stat = "identity") +
+   geom_text(aes(y = incidents, label = murders), vjust = -0.5, color = "black", size = 3) +
+  scale_y_continuous(breaks = seq(0, 12000, 300), labels = seq(0,12000,300)) +
+  labs(title = "Number of Shooting Incidents and Murders by Borough",
+       x = "Borough",
+       y = "Incident")
+```
+By analyzing the data, it can be concluded that Staten Island stands out as the borough with the lowest number of shooting incidents and the number of murders among all the boroughs in New York City. This may indicates that Staten Island is considered the safest borough to live without taking into account the size of population.
+
+Contrary to popular perception and negative news coverage, The data reveals that Brooklyn does not have the highest ratio of shooting incidents turning into Murders compared to other boroughs. In fact, based on the data, Staten Island has the highest ratio of shooting incidents turning into murders among all the boroughs. This highlights the importance of looking at actual data and not solely relying on preconceived notions or media portrayals when evaluating the safety of a neighborhood or borough.
+
+```{r Rank_By_Ratio_Incidents_Murders}
+NYPD_lowest_ratio_BORO <- NYPD_lowest_incidents_BORO %>%
+  mutate(BORO = factor(BORO, levels = BORO[order(murderrate)])) %>%
+  arrange(murderrate)
+```
+
+Presenting the ranking of New York City boroughs based on the ratio of shooting incidents that results in murders.
+
+```{r showing the saftest borough by murder rate}
+NYPD_lowest_ratio_BORO
+```
+
+### NYPD shooting incidents by perpetrator's race and age groups,
+I'm interested in examining the distribution of shooting incidents in New York City across different racial and age groups. By analyzing this data, we can gain insights into any potential disparities or patterns that may emerge on the intersection of race and age in connection to gun violence. 
+
+By transforming the dataset from NYPD_historic_cases to NYPD_Shooting_by_perprace, we have grouped the data according to the variables of date, PERP_RACE, and PERP_AGE_GROUP Then, we use the summarise() function to calculate the sum of incidents and murders within each group. Finally, we create the murder rate column by dividing the total murders by the total incidents.
+
+``` {r analyze the shooting incidents by race and age, warning= FALSE, message=FALSE}
+#@group the data by perpetrator's race and age groups
+NYPD_Shooting_by_perprace <- NYPD_historic_cases %>%
+  arrange(date) %>%
+  group_by(date, PERP_RACE, PERP_AGE_GROUP) %>%
+  summarize(murders = sum(STATISTICAL_MURDER_FLAG), incidents = table(BORO),
+            .groups = "drop") %>%
+  #adding a new column called 'City'. This column will be used to group the data by city and calculate the total counts of incidents and murders in each borough
+  mutate(murderrate = murders/incidents) %>%
+  select(PERP_RACE, PERP_AGE_GROUP, incidents, murders, murderrate ) %>%
+  ungroup()
+```
+
+```{r NYPD_Shooting_by_perprace_tootal, message=FALSE}
+NYPD_Shooting_by_perprace_tootal <- NYPD_Shooting_by_perprace %>%
+  #clean up the data frame by removing erroneous data
+  #filter(!is.na(PERP_RACE)) %>%
+  #obviouslly these are typos for the age group
+  #filter(!(PERP_AGE_GROUP %in% c(1020, 224, 940))) %>%
+  #filter(PERP_RACE != "(null)") %>%
+  group_by(PERP_RACE, PERP_AGE_GROUP) %>%
+  summarise(murders = sum(murders), incidents = sum(incidents), murderrate = sum(murderrate)) %>%
+select(PERP_RACE, PERP_AGE_GROUP, incidents, murders, murderrate) %>%
+ungroup()
+
+#Visualizing the Distribution of NYPD Shooting Incidents by Race and Age Group
+
+NYPD_Shooting_by_perprace %>%
+  ggplot(aes(x = PERP_RACE, fill = PERP_AGE_GROUP)) +
+  geom_bar(aes(y = incidents), stat = "identity") +
+  scale_y_continuous(breaks = seq(0, 12000, 300), labels = seq(0,12000,300)) +
+  labs(title = "Distribution of NYPD Shooting Incidents by race and age group",
+       x = "race and age group",
+       y = "Incident") +
+theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+The chart reveals a observation that the black ethnic group shows relatively higher crime rates. It is important to acknowledge that this finding aligns with the  societal bias that often links higher crime rates to individuals of black race.
+
+To avoid displaying null, NA values in the x-axis, a data cleaning process was performed on the NYPD_historic_cases dataset. This process involved removing null, NA, and blank values from the PERP_RACE column. As a result, the number of incidents has been reduced.
+
+### Potential Bias Caused by Missing Values in the coulmn of Dataset
+Upon examining the dataset and executing the command line below to count the occurrences, it was discovered that the PERP_RACE column contains 9310 missing or incomplete data out of a total of 27312 entries. This accounted for approximately 34% of values are missing in the column of PERP_RACE. Such a significant amount of missing data has the potential to introduce bias, especially if specific groups are disproportionately affected by the missing values.
+
+```{r PERP_RACE_missing_incomplete_data}
+na_count <- sum(NYPD_historic_cases_org$PERP_RACE == ""|is.na(NYPD_historic_cases_org$PERP_RACE))
+
+na_count
+
+nrow(NYPD_historic_cases_org)
+
+```
+
+
+### Analyze the correlation between the Perpetrator's and Victim's Races  
+  
+Going further, I aim to explore the correlation between the perpetrator's and victim's races by transforming the dataset from NYPD_historic_cases to NYPD_Shooting_perp_vic_race. In this transformation process, I grouped the dataset by date, PERP_RACE, PERP_AGE_GROUP, VIC_RACE, and VIC_AGE_GROUP. This grouping will allow for a more detailed analysis of the relationship between the races of the perpetrators and victims involved in the shooting incidents.
+
+``` {r Examine the correlation between the race of the perpetrator (PERP_RACE) and the race of the victim (VIC_RACE), warning = FALSE, message=FALSE}
+NYPD_Shooting_perp_vic_race <- NYPD_historic_cases %>%
+  #grouping the perpetractor's race age group and victim's reage and age group
+  group_by(date, PERP_RACE, PERP_AGE_GROUP, VIC_RACE, VIC_AGE_GROUP) %>%
+  summarize(murders = sum(STATISTICAL_MURDER_FLAG), incidents = table(BORO),
+            .groups = "drop") %>%
+  mutate(City = "New York", murderrate = murders/incidents) %>%
+  select(PERP_RACE, PERP_AGE_GROUP, VIC_RACE, VIC_AGE_GROUP, incidents, murders, murderrate ) %>%
+  ungroup()
+
+NYPD_Shooting_perp_vic_tootal <- NYPD_Shooting_perp_vic_race %>%
+  #filter(!is.na(PERP_RACE)) %>%
+  #filter(!(PERP_AGE_GROUP %in% c(1020, 224, 940))) %>%
+  #filter(PERP_RACE != "(null)") %>%
+  group_by(PERP_RACE, VIC_RACE) %>%
+  summarise(murders = sum(murders), incidents = sum(incidents), murderrate = sum(murderrate)) %>%
+#select(PERP_RACE, VIC_RACE, incidents, murders, murderrate) %>%
+ungroup()
+
+NYPD_Shooting_perp_vic_tootal %>%
+  ggplot(aes(x = PERP_RACE, fill = VIC_RACE)) +
+  geom_bar(aes(y = murders), stat = "identity") +
+  scale_y_continuous(breaks = seq(0, 5000, 100), labels = seq(0,5000,100)) +
+  labs(title = "Shooting Incidents by PERP_RACE and VIC_RACE",
+       x = "Perpetrator's race",
+       y = "murders") +
+theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Through data analysis, our primary objective is to examine potential tensions among ethnic groups. The chart above reveals notable tensions between the Black, Black Hispanic, and White Hispanic groups. Notably, a majority of the incidents depicted in the chart involve conflicts within the Black community.
+
+To avoid displaying null, NA values in the x-axis, a data cleaning process was performed on the NYPD_historic_cases dataset. This process involved removing null, NA, and blank values from the PERP_RACE column. As a result, the number of murders has been reduced.
+
+### mssing value in the column introudced bias
+However, it is important to note that the potential bias introduced by the missing values in the PERP_RACE column, as mentioned earlier, could impact the analysis.
+
+
+### Examining the distribution of NYPD Shooting incidents in connection to the locations.
+
+I'm interested in understanding the relationship between the location and the occurrence of murders.
+
+For this analysis, the dataset has been transformed by grouping the data from NYPD_historic_cases and NYPD_Shooting_by_location based on BORO, LOCATION_DESC, and PERP_RACE. The goal is to summarize the number of murders and shooting incidents per location.
+
+``` {r Examine the NYPD Shooting incidents by locations, message=FALSE}
+NYPD_Shooting_by_location <- NYPD_historic_cases %>%
+  group_by(BORO, LOCATION_DESC, PERP_RACE) %>%
+  #filter(LOCATION_DESC != "(null)") %>%
+  #filter(PERP_RACE != "(null)") %>%
+  summarize(murders = sum(STATISTICAL_MURDER_FLAG), incidents = table(BORO)) %>%
+  mutate(murderrate = murders/incidents) %>%
+  select(BORO, LOCATION_DESC, PERP_RACE, incidents, murders, murderrate) %>%
+  ungroup()
+
+#removing the incomplete data set
+#NYPD_Shooting_by_location <- NYPD_Shooting_by_location[complete.cases(NYPD_Shooting_by_location), ]
+
+#Visualizing the distribution of NYPD shooting incidents by location.
+NYPD_Shooting_by_location %>%
+  ggplot(aes(x = LOCATION_DESC, fill = PERP_RACE)) +
+  geom_bar(aes(y = murders), stat = "identity") +
+  scale_y_continuous(breaks = seq(0, 12000, 300), labels = seq(0,12000,300)) +
+  labs(title = "analyze Shooting incidents by the LOCATION_DESC and PERP_RACE.",
+       x = "LOCATION_DESC and PERP_RACE",
+       y = "murder") +
+theme_bw() +
+  theme(axis.text.x = element_text(size = 4, angle = 45, hjust = 1))
+```
+Contrary to the common perception of home being the safest place for families, the chart reveals a different reality. Upon examining the data, it becomes apparent that a significant portion of violent incidents occurs within our own households, challenging the notion of home as a secure haven
+
+### Potential Bias introduced by mssing data
+However, upon examining the dataset, I discovered that the column "LOCATION_DESC" contains 14,977 missing data out of a total of 27,312 entries, accounting for approximately 55% of missing values in the column.
+
+```{r LOCATION_DESC_missing_values}
+na_count <- sum(NYPD_historic_cases_org$LOCATION_DESC == ""|is.na(NYPD_historic_cases_org$LOCATION_DESC))
+na_count
+```
+
+
+### Examining the distribution of NYPD incidents in connection to the hours
+I'm interested in analyzing the relationship between shooting incidents in New York City and specific hours of occurrence.
+
+```{r NYPD incidents by hours, message=FALSE}
+NYPD_Shooting_by_hours <- NYPD_historic_cases %>%
+  mutate(hours = hour(OCCUR_TIME)) %>%
+  group_by(hours, BORO, LOCATION_DESC) %>%
+  #filter(!is.null(BORO) & BORO != "") %>%
+  summarize(murders = sum(STATISTICAL_MURDER_FLAG), incidents = table(BORO)) %>%
+  #mutate(murderrate = murders/incidents) %>%
+  #select(hours, BORO, LOCATION_DESC, incidents, murders, murderrate) %>%
+  ungroup()
+  
+NYPD_Shooting_by_hours %>%
+  ggplot(aes(x = hours, fill = NULL)) +
+  geom_bar(aes(y = murders), stat = "identity") +
+  scale_y_continuous(breaks = seq(0, 12000, 300), labels = seq(0,12000,300)) +
+  labs(title = "Analyzing the Distribution of Murders by Hour.",
+       x = "hours",
+       y = "murder") +
+theme_bw() +
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
+```
+As depicted in the chart, there is a notable trend where a significant number of murders tend to occur during late-night hours, typically between 9 PM and 2 AM, in the early morning.
+
+
+### prediction model
+The model was developed using the NYPD_historic_cases_org dataset to predict the occurrence of murders in connection to shooting incidents.
+
+```{r modling the NYPD Shooting Incidents}
+NYPD_Shooting_by_hours <- NYPD_historic_cases_org %>%
+  mutate(hours = hour(OCCUR_TIME)) %>%
+  group_by(hours, BORO, LOCATION_DESC) %>%
+  filter(!is.null(BORO) & BORO != "") %>%
+  summarize(murders = sum(STATISTICAL_MURDER_FLAG), incidents = table(BORO)) %>%
+  mutate(murderrate = murders/incidents) %>%
+  select(hours, BORO, LOCATION_DESC, incidents, murders, murderrate) %>%
+  ungroup()
+#clean out the missing values
+missing_values <- with(NYPD_Shooting_by_hours, !complete.cases(hours, LOCATION_DESC, murders))
+NYPD_Shooting_by_hours_complete <- na.exclude(NYPD_Shooting_by_hours[, c("incidents", "murders", "murderrate", "hours")])
+#The prediction is being modeled by incorporating the variables of murders and incidents.
+mod <- lm(murders ~ incidents, data = NYPD_Shooting_by_hours_complete)
+summary(mod)
+```
+Overall, the output suggests that there is a positive and significant relationship between the number of 
+incidents and the variable of murders in the linear regression model.
+
+```{r visualize the prediction model}
+ NYPD_Shooting_by_hours_prep <- NYPD_Shooting_by_hours_complete  %>% mutate(pred = predict(mod)) %>%
+     select(hours, incidents, murders, murderrate, pred)
+  NYPD_Shooting_by_hours_prep  %>% ggplot() +
+     geom_point(aes(x = incidents, y = murders), color = "blue") +
+     geom_point(aes(x = incidents, y= pred), color = "red") +
+  scale_x_continuous(breaks = seq(0, 2000, 50), labels = seq(0,2000,50)) 
+```
+
+### Session Info for NYPD Shooting Incidents 
+```{r sessionInfo }
+#libraries requried to run this R markdown
+#library(dplyr)
+#library(tidyr)
+#library(readr)
+#library(lubridate)
+#library(ggplot2)
+
+sessionInfo()
+```

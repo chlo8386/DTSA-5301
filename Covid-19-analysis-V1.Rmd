@@ -1,0 +1,409 @@
+---
+title: "Covid-19 Analysis"
+author: "Chihao Lo"
+date: "2023-06-26"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(lubridate)
+library(ggplot2)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+### setting up data source
+```{r setup Covid-19 data source}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+data_file <-c("time_series_covid19_confirmed_US.csv",  "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv",  "time_series_covid19_deaths_global.csv")
+
+urls<-str_c(url_in,data_file)
+
+uid_lookup_population_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+```
+
+
+### import data
+
+mporting COVID-19 Data from the Johns Hopkins University Website
+
+```{r import Covid-19 data}
+global_cases <- read_csv(urls[2])
+global_deaths <- read_csv(urls[4])
+us_cases <- read_csv(urls[1])
+us_deaths <- read_csv(urls[3])
+
+uid_population = read_csv(uid_lookup_population_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+```
+
+
+### tidying global cases dataset
+tidying and transforming the global cases dataset by using pivot_longer function to convert teh cases and date columns into rows and using select to  remove the Lat and Long.
+
+Same process for the global_deaths
+```{r tidy global data}
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat, Long))
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+
+#combined the global_cases and globa_deaths into global
+
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = 'Country/Region', 
+         Province_State = 'Province/State') %>%
+  mutate(date = mdy(date))
+
+#filter the case = 0
+global <- global %>%
+  filter(cases > 0)
+```
+
+### tidying US case dataset
+tidying and transforming the US cases dataset by using pivot_longer function to convert teh cases and date columns into rows. Additionally, it converts the date column to a date object and removes the "Lat" and "Long_" columns using the select() function. 
+
+Apply the same process to tidy and transform the dataset for US death.
+```{r tidy us case}
+us_cases <- us_cases %>%
+  pivot_longer(cols = -c(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+us_deaths <- us_deaths %>%
+  pivot_longer(cols = -c(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+us <- us_cases %>%
+  full_join(us_deaths)
+
+```
+
+### Add the population to the global dataset
+adding the population to the global dataset by using the left_join to join the UID_popluation dataset, and use select function to remove unwanted columns, UID and FIPS
+
+```{r add the population to the global dataset}
+#combine the column of Province_State and Country_Region under the column of Combined_key
+global <- global %>%
+  unite("Combined_key",
+  c(Province_State, Country_Region),
+  sep = ", ",
+  na.rm = TRUE,
+  remove = FALSE)
+
+# join global dataset with uid_population dataset
+global <- global %>%
+  left_join(uid_population, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, Population, 
+         Combined_key)
+```
+
+### rank the country by death rate
+
+o transform the global dataset into a dataset, global_death_rate, I grouped the data by Country_Region and then summarized the deaths, cases, and Population columns. After that, I created a new column called death_rate to calculate the death rate for each country. 
+
+```{r rank the contry by death rate, message = FALSE}
+global_death_rate <- global %>%
+  group_by(Country_Region) %>%
+  summarise(deaths = max(deaths), cases = max(cases), Population = max(Population)) %>%
+  mutate(deathsrate = deaths / cases) %>%
+  select(Country_Region, deaths, cases, deathsrate) %>%
+ungroup()
+
+us_death_rate <- us %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarise(deaths = sum(deaths), cases = sum(cases), Population = sum(Population)) %>%
+  select(Province_State, deaths, cases) %>%
+  ungroup()
+
+us_death_rate <- us_death_rate %>%
+  group_by(Province_State) %>%
+  summarise(deaths = max(deaths), cases = max(cases)) %>%
+  mutate(deathsrate = deaths/cases) %>%
+  select(Province_State, deaths, cases, deathsrate) %>%
+  ungroup()
+
+us_death_rate <- us_death_rate %>%
+  summarise(deaths = sum(deaths), cases = sum(cases)) %>%
+  mutate(deathsrate = deaths/cases) 
+```
+### The top 20 countries with the highest COVID-19 death rate.
+
+```{r the top 20 countries with the higest Covid-19 death rate}
+# rank the country by the highest death rate
+global_death_rate %>%
+      slice_max(deathsrate, n= 20) %>%
+      filter(Country_Region != "US")
+```
+
+
+### creating a combined dataset
+For validation purposes, I have combined the datasets "global_death_rate" and "us_death_rate," which contain information about cases, deaths, and death rates from both datasets. I will utilize this combined dataset to validate the corresponding data of cases, deaths, and death rates from each dataset, aiming to identify any potential discrepancies.
+
+```{r combine the us dataset with global dataset}
+# Both datasets contain records for the United States in the "Country_Region" field. To distinguish the data from each dataset, we need to differentiate them.
+combined_data <- rbind(global_death_rate %>%
+     filter(Country_Region == "US") %>% 
+  mutate(Country_Region = "US Global"), 
+  us_death_rate %>% 
+  mutate(Country_Region = "US Dataset"))
+```
+
+### validate the data for US between the US dataset and global dataset
+The primary objective is to identify any discrepancies or disparities between the US dataset and the global dataset. The focus is on comparing the data specifically for the United States to evaluate inconsistencies or variations between the two datasets.
+
+```{r visualizing the death rate from both US dataset vs global dataset}
+
+combined_data %>%
+  ggplot(aes(x = Country_Region, fill = deathsrate)) +
+  geom_bar(aes(y = deathsrate), stat = "identity") +
+  coord_cartesian() +
+  labs(title = "validate the us death rates between the US dataset and the global dataset",
+       x = "Country_Region",
+       y = "Deaths rate") +
+theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r validate number of deaths and cases between us and global dataseet}
+deaths_diff <- combined_data$deaths - lag(combined_data$deaths)
+deaths_diff <- deaths_diff[!is.na(deaths_diff)]
+cases_diff <- combined_data$cases - lag(combined_data$cases)
+cases_diff <- cases_diff[!is.na(cases_diff)]
+
+#shows the difference
+cases_diff
+deaths_diff
+
+combined_data %>%
+ggplot(aes(x = Country_Region)) +
+  geom_bar(aes(y = cases), stat = "identity", fill = "red") +
+  geom_bar(aes(y = deaths), stat = "identity", fill = "blue") +
+  #coord_cartesian(ylim = c(0, max(combined_data$deaths) *1.01)) +
+  coord_cartesian() +
+  labs(title = "validate the US cases and deaths between US and global dataset",
+       x = "Country_region",
+       y = "cases") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+After examining the numerical values, no discrepancies are found between the two datasets. 
+
+### the trend of death rate for US and China
+To analyze the trend of vaccination efficacy in the United States (US) and China, with a particular focus on evaluating the efficiency of vaccine deployment, considering that China has its own vaccination program.
+
+Transforming the global dataset into the "vaccination_US_China" dataset, I grouped the data by date and Country_Region. Then, I summarized the cases and deaths for each country region. To facilitate visualization, I added a new column called "deathrate" to represent the death rate in each country region.
+```{r validate the efficacy of the vaccination, message=FALSE}
+vaccination_US_China <- global %>%
+  group_by(date, Country_Region) %>%
+  filter(Country_Region %in% c("US", "China")) %>%
+  summarise(cases = max(cases), deaths = max(deaths)) %>%
+mutate(deathsrate = deaths/cases) %>%
+  select(date, Country_Region, deaths, cases, deathsrate) %>%
+  ungroup()
+
+
+vaccination_US_China %>%
+  ggplot() +
+  geom_line(aes(x = date, y = deathsrate, color = Country_Region)) +
+  geom_point(aes(x= date, y = deathsrate, color = Country_Region)) +
+  #scale_color_manual(values = c("US" = "blue", "China" = "green"))+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 0)) +
+  labs(x = "date", y = "death rate%", title = "Vaccination Efficacy")
+```
+
+By analyzing the chart, it indicated that the United States (US) had a significant surge in the COVID-19 death rate in 2020, followed by subsequent fluctuations. These fluctuations were characterized by a decline, a subsequent increase, and eventually a downward trend, reaching a relatively stable level. On the other side, China experienced a surge in the death rate in 2020, followed by a period of stability until 2022, indicating a sharp decrease in death rates during that year.
+
+However, it is important to note that the chart alone does not provide conclusive evidence regarding the impact of COVID-19 vaccination on the decline in death rates. The exact cause of the observed drop in death rates remains uncertain at this point. Further analysis and investigation are required to determine the underlying factors contributing to these trends and their correlation with vaccination efforts.
+
+To further analyize this vaccination efficacy, I would like see the COVID-19 cases
+```{r  To examine the COVID-19 cases in the United States (US) and China}
+vaccination_US_China %>%
+  ggplot() +
+  geom_line(aes(x = date, y = cases, color = Country_Region)) +
+  geom_point(aes(x= date, y = cases, color = Country_Region)) +
+  #scale_color_manual(values = c("US" = "blue", "China" = "green"))+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 0)) +
+  labs(x = "date", y = "cases", title = "Number of Covid-19 Cases")
+```
+
+From the chart, it shows that the number of COVID-19 cases in the United States (US) appears relatively stable compared to the significant surge observed in China. The chart also indicates a drop in death rates in China, which could potentially be associated with the concept of herd immunity. However, it is crucial to recognize that the chart alone does not provide conclusive evidence to definitively attribute the decline in death rates solely to herd immunity.
+
+### Identifying the country with the highest death rate
+In the ranking, North Korea has been excluded due to inconsistent data.
+
+```{r country with the highest death rate}
+country_worst_death_rate <- global %>%
+group_by(Country_Region) %>%
+summarise(cases = max(cases), deaths = max(deaths), population = max(Population)) %>%
+mutate(deathsrate = deaths/cases) %>%
+select(Country_Region, deaths, cases, deathsrate)%>%
+  ungroup() 
+
+#filter out North Koera, the data is incorrect  
+country_worst_death_rate <- country_worst_death_rate %>%
+filter(Country_Region != "Korea, North") %>%
+slice_max(deathsrate, n=10)
+
+country_worst_death_rate %>%
+  ggplot(aes(x = Country_Region)) +
+  geom_bar(aes(y = deathsrate, color = Country_Region), stat = "identity") +
+  coord_cartesian() +
+  labs(title = "Countries with the Highest Death Rate",
+       x = "Country_region",
+       y = "death rate %") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+country_worst_death_rate %>%
+  ggplot(aes(x = Country_Region)) +
+  geom_bar(aes(y = cases, color = Country_Region), stat = "identity") +
+  coord_cartesian() +
+  labs(title = "Total Number of Cases for Countries with the Highest Death Rate",
+       x = "Country_region",
+       y = "death rate %") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+By examining the chart, it is evident that the MS Zaandam cruise ship has the highest death rate despite having the lowest number of COVID-19 cases. This can be attributed to the unique environment of a cruise ship, which can facilitate the rapid spread of the virus due to close quarters and shared facilities. While cruise ships may have medical care facilities, the challenging circumstances and limited resources onboard could contribute to a higher mortality rate.
+
+On the other hand, Mexico demonstrates a different pattern, with the highest number of COVID-19 cases but a relatively lower death rate. This could potentially indicate that Mexico has implemented effective measures such as access to COVID-19 vaccinations and relatively better medical care facilities. These factors may contribute to lower fatality rates compared to the number of cases in the country.
+
+### Potential biases in the data,
+
+On a cruise ship, with a confined environment and a relatively smaller population, it may be easier to track and identify COVID-19 cases as well as the causes of death. This could result in more accurate and comprehensive reporting of cases and deaths.
+
+In contrast, a large country like Mexico, with diverse regions and remote areas, may face challenges in accurately tracking and reporting COVID-19 cases and deaths. Factors such as limited healthcare infrastructure, uneven access to testing facilities, and difficulties in reaching remote areas can contribute to underreporting or delayed reporting of cases and deaths.
+
+
+### the US COVID-19 data by State
+This us_by_state dataset grouped the Province_State, Country_Region and date and then summerize the cases, deaths and Population, then create a addintional columns deathsrate
+```{r US COVID-19 data by state, message=FALSE}
+us_by_state <- us %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deathsrate = deaths / cases) %>%
+  select(Province_State, Country_Region, date, cases, deaths, deathsrate, Population) %>%
+  ungroup()
+
+us_totals <- us_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>%
+  mutate(deathsrate = deaths / cases) %>%
+  select(Country_Region, date, cases, deaths, deathsrate, Population) %>%
+  ungroup()
+```
+
+###Visualizing the totals of COVID-19 cases in the United States.
+```{r visualizing the total of us covid-19 cases, message=FALSE}
+us_totals %>%
+  filter(cases >0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "buttom",
+        axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID19 in US", y = NULL)
+
+```
+
+### the top 20 US states with the higest death rate
+I'm interested in viewing the top 20 US states with the highest death rates. To accomplish this, I transformed the dataset from "us_by_state" to "us_by_state_worst_death_rate" by grouping the data by Province_State. Subsequently, I summarized the cases, deaths, and populations for each state. Lastly, I created an additional column called "death_rate" to represent the death rate in each state.
+```{r visualizing by State}
+
+us_by_state_worst_death_rate <- us_by_state %>%
+  filter(cases > 0) %>%
+  group_by(Province_State) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(deathsrate = deaths/cases) %>%
+  select(Province_State, deaths, cases, deathsrate) %>%
+ungroup()
+
+us_by_state_worst_death_rate <- us_by_state_worst_death_rate %>%
+  slice_max(deathsrate, n=20)
+
+#showing the top 20 states with the highest death reate
+
+us_by_state_worst_death_rate
+
+
+us_by_state_worst_death_rate %>%
+  ggplot(aes(x = Province_State)) +
+  geom_bar(aes(y = deathsrate, color = Province_State), stat = "identity") +
+  coord_cartesian() +
+  labs(title = "The top 20 states with the highest death reate",
+       x = "Province_State",
+       y = "death rate %") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### prediction model
+The model was developed using the global_death_rate dataset to predict the death rate in connection to Covid-19 cases.
+
+```{r model}
+
+mod <- lm(deathsrate ~ cases, data = global_death_rate)
+g_tot_w_pred <- global_death_rate %>%  
+  mutate(pred = predict(mod))
+
+g_tot_w_pred %>% 
+  filter(deathsrate <= 1) %>%
+ggplot() +
+geom_point(aes(x = cases, y = deathsrate), color = "blue") +
+geom_point(aes(x = cases, y = pred), color = "red") +
+scale_y_continuous(breaks = seq(0, 1, 0.1), labels = seq(0,1,0.1)) 
+
+```
+The prediction model demonstrates some level of matching with the trend observed in the cases. This alignment indicates that the model is capturing certain patterns and tendencies within the data
+
+### Session Info for NYPD Shooting Incidents 
+```{r sessionInfo }
+#libraries requried to run this R markdown
+#library(tidyverse)
+#library(dplyr)
+#library(tidyr)
+#library(readr)
+#library(lubridate)
+#library(ggplot2)
+
+sessionInfo()
+```
